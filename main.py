@@ -17,7 +17,6 @@ CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Initialize Clients
-# Note: Using the updated 2026 'google-genai' library
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -27,18 +26,21 @@ def check_elephant(image_bytes):
     try:
         img = Image.open(io.BytesIO(image_bytes))
         
-        # Use the simplified model name to avoid 404 errors
+        # Using the standard model string for the genai SDK
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=["Is there an elephant in this image? Respond with only 'YES' or 'NO'.", img]
         )
         
-        answer = response.text.strip().upper()
-        logger.info(f"--- Gemini Analysis: {answer} ---")
-        return "YES" in answer
+        # Safety check for response text
+        if response and response.text:
+            answer = response.text.strip().upper()
+            logger.info(f"--- Gemini Analysis: {answer} ---")
+            return "YES" in answer
+        return None
     except Exception as e:
         logger.error(f"!!! Gemini Error: {e} !!!")
-        return False
+        return None
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
@@ -53,19 +55,22 @@ def receive_photo():
     logger.info(f">>> Image received: {len(image_bytes)} bytes")
 
     try:
-        # 1. Send the photo to your Telegram chat immediately
+        # 1. Send the photo to your Telegram immediately
         logger.info(">>> Delivering photo to Telegram...")
         bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Analyzing...")
         
         # 2. Perform AI Elephant Detection
-        is_elephant = check_elephant(image_bytes)
+        result = check_elephant(image_bytes)
         
-        if is_elephant:
-            bot.send_message(CHAT_ID, "🐘 ALERT: ELEPHANT DETECTED! 🐘")
+        if result is True:
+            bot.send_message(CHAT_ID, "🐘 ALERT: ELEPHANT CONFIRMED! 🐘")
             logger.info(">>> Result: Elephant Found")
-        else:
+        elif result is False:
             bot.send_message(CHAT_ID, "✅ Analysis: No elephant detected.")
             logger.info(">>> Result: Clear")
+        else:
+            bot.send_message(CHAT_ID, "⚠️ AI Processing Error. Check Railway Logs.")
+            logger.error(">>> Result: AI Error")
             
         return "OK", 200
     except Exception as e:
@@ -76,9 +81,9 @@ def receive_photo():
 def index():
     """Health check for Railway and browser testing"""
     logger.info(">>> Health check accessed")
-    return "Elephant Detection Bot (New GenAI SDK) is Running Successfully!"
+    return "Elephant Detection Bot is Running Successfully!"
 
 if __name__ == "__main__":
-    # Railway automatically assigns a port; we listen on 8080 by default
+    # Railway sets the PORT environment variable
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
