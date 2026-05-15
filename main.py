@@ -7,8 +7,10 @@ import io
 from anthropic import Anthropic
 from flask import Flask, request as flask_request
 
-# --- INITIALIZE ---
+# --- INITIALIZE FLASK ---
 app = Flask(__name__)
+
+# --- LOGGING SETUP ---
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger('ElephantBot')
 
@@ -17,18 +19,19 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 CLAUDE_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
+# Initialize Clients
 bot = telebot.TeleBot(BOT_TOKEN)
 client = Anthropic(api_key=CLAUDE_KEY)
 
 def analyze_with_claude(image_bytes):
-    """Sends image to Claude 3.5 Haiku for analysis"""
+    """Sends image to Claude Haiku 4.5 for high-speed analysis"""
     try:
-        # Claude needs the image encoded in base64
+        # Encode the ESP32-CAM frame to Base64
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
         
-        # We use Haiku because it is the fastest and cheapest vision model
+        # Using the stable 'claude-haiku-4-5' alias for 2026
         message = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=100,
             messages=[
                 {
@@ -43,8 +46,8 @@ def analyze_with_claude(image_bytes):
                             },
                         },
                         {
-                            "type": "text",
-                            "text": "Is there an elephant in this image? Respond only in this format: ANSWER: [YES/NO], CONFIDENCE: [percentage]. Example: ANSWER: YES, CONFIDENCE: 95%"
+                            "type": "text", 
+                            "text": "Check for elephants. Respond strictly: ANSWER: [YES/NO], CONFIDENCE: [percentage]."
                         }
                     ],
                 }
@@ -60,27 +63,27 @@ def analyze_with_claude(image_bytes):
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
-    logger.info(">>> Image received from ESP32-CAM")
+    logger.info(">>> Frame received from ESP32-CAM")
     image_bytes = flask_request.data
     
     if not image_bytes:
         return "No data", 400
 
     try:
-        # 1. Send to Telegram first
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing with Claude AI...")
+        # 1. Immediate Telegram Feed
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing with Claude Haiku...")
 
-        # 2. Get Claude's opinion
+        # 2. Get AI Analysis
         analysis = analyze_with_claude(image_bytes)
         
-        # 3. Process result
+        # 3. Final Notification Logic
         if analysis and "YES" in analysis:
             msg = f"🐘 **ALERT: ELEPHANT DETECTED!** 🐘\n{analysis}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
         elif analysis and "NO" in analysis:
             bot.send_message(CHAT_ID, "✅ **Result: Clear**")
         else:
-            bot.send_message(CHAT_ID, "⚠️ Claude could not process the image.")
+            bot.send_message(CHAT_ID, "⚠️ AI Error. Please check API Key/Credits.")
 
         return "OK", 200
 
@@ -90,8 +93,9 @@ def receive_photo():
 
 @app.route("/")
 def index():
-    return "Elephant Detection (Claude Edition) is Online."
+    return "Elephant Monitoring (Claude 4.5 Stable) is Online."
 
 if __name__ == "__main__":
+    # Railway automatically provides the PORT
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
