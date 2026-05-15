@@ -11,114 +11,113 @@ from flask import Flask, request as flask_request
 app = Flask(__name__)
 
 # --- LOGGING SETUP ---
-# Forcing logs to stdout so they appear in Railway's console
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger('ElephantBot')
 
 # --- CREDENTIALS ---
-# Ensure these are set in your Railway 'Variables' tab
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# Initialize Telegram Bot
+# Initialize Telegram
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Hugging Face Model: Facebook DETR (ResNet-50)
-# This model is excellent for identifying 'elephant' among other animals
-HF_MODEL = "facebook/detr-resnet-50"
+# Stable Classifier Model - Google ViT
+# This model is 'Always On' and very fast for free tier users
+HF_MODEL = "google/vit-base-patch16-224"
 API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
 def query_huggingface(image_bytes):
-    """Sends image to Hugging Face with stability options"""
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    
-    # We use 'wait_for_model' to prevent the 404/Empty Response errors 
-    # when the model is cold (sleeping).
-    payload = {
-        "inputs": image_bytes,
-        "options": {"wait_for_model": True}
+    """Sends image with correct binary headers to prevent HTML errors"""
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "Content-Type": "application/octet-stream" 
     }
     
+    # Passing wait_for_model as a parameter is more reliable in 2026
+    params = {"wait_for_model": "true"}
+    
     try:
-        # Timeout set to 90s to allow for cold-start loading
         response = requests.post(
             API_URL, 
             headers=headers, 
             data=image_bytes, 
-            timeout=90
+            params=params,
+            timeout=60
         )
         
-        # Log the status for debugging
         logger.info(f"HF Status: {response.status_code}")
-        
+
+        # Safety check: If the response isn't JSON, it's an HTML error page
+        if "application/json" not in response.headers.get("Content-Type", ""):
+            logger.error("Hugging Face returned HTML/Text. Check if your Token is correct.")
+            return None
+
         if response.status_code == 200:
             return response.json()
         else:
-            logger.error(f"HF Server returned error: {response.text}")
+            logger.error(f"HF Error {response.status_code}: {response.text[:100]}")
             return None
             
     except Exception as e:
-        logger.error(f"Network/Request Error: {e}")
+        logger.error(f"Request Exception: {e}")
         return None
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
-    logger.info(">>> Incoming frame from ESP32-CAM")
+    logger.info(">>> Received image from ESP32-CAM")
     image_bytes = flask_request.data
     
     if not image_bytes:
-        logger.warning("Empty payload received.")
         return "No data", 400
 
     try:
-        # 1. Send the raw image to Telegram so you can see what triggered it
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Running AI analysis...")
+        # 1. Send the visual to Telegram immediately
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing frame...")
 
-        # 2. Perform Detection
+        # 2. Process with AI
         detections = query_huggingface(image_bytes)
         
         elephant_found = False
         highest_score = 0
+        detected_label = ""
 
-        # 3. Parse the Results
+        # 3. Parse classification results
         if detections and isinstance(detections, list):
             for obj in detections:
                 label = obj.get("label", "").lower()
                 score = obj.get("score", 0)
                 
-                # Check for 'elephant' with a 40% confidence threshold
-                if label == "elephant" and score > 0.4:
+                # Model recognizes 'African elephant' and 'Indian elephant'
+                if "elephant" in label and score > 0.35:
                     elephant_found = True
                     if score > highest_score:
                         highest_score = score
+                        detected_label = label
         
-        # 4. Final Telegram Notification
+        # 4. Results logic
         if elephant_found:
             confidence = f"{int(highest_score * 100)}%"
-            msg = f"🐘 **ALERT: ELEPHANT DETECTED!** 🐘\n📈 Confidence: {confidence}\nModel: {HF_MODEL}"
+            msg = f"🐘 **ALERT: {detected_label.upper()} DETECTED!** 🐘\n📈 Confidence: {confidence}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-            logger.info(f"POSITIVE DETECTION: {confidence}")
+            logger.info(f"MATCH: {detected_label} ({confidence})")
         else:
-            # Check if the API actually worked but found nothing
             if detections is not None:
-                bot.send_message(CHAT_ID, "✅ **Area Clear.**\nNo elephants identified in this frame.")
-                logger.info("NEGATIVE DETECTION: Clear")
+                bot.send_message(CHAT_ID, "✅ **Result: Clear**")
+                logger.info("MATCH: None")
             else:
-                bot.send_message(CHAT_ID, "⚠️ AI Service Busy. Please try triggering again.")
-                logger.error("DETECTION FAILED: API Error")
+                bot.send_message(CHAT_ID, "⚠️ AI Service Error. Check Token.")
 
         return "OK", 200
 
     except Exception as e:
-        logger.error(f"Critical Route Error: {e}")
+        logger.error(f"Route Error: {e}")
         return "Error", 500
 
 @app.route("/")
 def index():
-    return "Elephant Detection System (Hugging Face GA) is Online."
+    return "Elephant Monitoring System v2026.STABLE is Live."
 
 if __name__ == "__main__":
-    # Railway sets the PORT env variable automatically
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
