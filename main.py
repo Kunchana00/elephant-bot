@@ -1,122 +1,96 @@
 import os
 import telebot
 import logging
-import time
-import requests
+import base64
 import sys
 import io
+from anthropic import Anthropic
 from flask import Flask, request as flask_request
 
-# --- INITIALIZE FLASK ---
+# --- INITIALIZE ---
 app = Flask(__name__)
-
-# --- LOGGING SETUP ---
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger('ElephantBot')
 
 # --- CREDENTIALS ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-HF_TOKEN = os.environ.get("HF_TOKEN")
+CLAUDE_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-# Initialize Telegram
 bot = telebot.TeleBot(BOT_TOKEN)
+client = Anthropic(api_key=CLAUDE_KEY)
 
-# Stable Classifier Model - Google ViT
-# This model is 'Always On' and very fast for free tier users
-HF_MODEL = "google/vit-base-patch16-224"
-API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-
-def query_huggingface(image_bytes):
-    """Sends image with correct binary headers to prevent HTML errors"""
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/octet-stream" 
-    }
-    
-    # Passing wait_for_model as a parameter is more reliable in 2026
-    params = {"wait_for_model": "true"}
-    
+def analyze_with_claude(image_bytes):
+    """Sends image to Claude 3.5 Haiku for analysis"""
     try:
-        response = requests.post(
-            API_URL, 
-            headers=headers, 
-            data=image_bytes, 
-            params=params,
-            timeout=60
+        # Claude needs the image encoded in base64
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        
+        # We use Haiku because it is the fastest and cheapest vision model
+        message = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=100,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_base64,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "Is there an elephant in this image? Respond only in this format: ANSWER: [YES/NO], CONFIDENCE: [percentage]. Example: ANSWER: YES, CONFIDENCE: 95%"
+                        }
+                    ],
+                }
+            ],
         )
         
-        logger.info(f"HF Status: {response.status_code}")
-
-        # Safety check: If the response isn't JSON, it's an HTML error page
-        if "application/json" not in response.headers.get("Content-Type", ""):
-            logger.error("Hugging Face returned HTML/Text. Check if your Token is correct.")
-            return None
-
-        if response.status_code == 200:
-            return response.json()
-        else:
-            logger.error(f"HF Error {response.status_code}: {response.text[:100]}")
-            return None
-            
+        result_text = message.content[0].text.strip().upper()
+        logger.info(f"Claude Result: {result_text}")
+        return result_text
     except Exception as e:
-        logger.error(f"Request Exception: {e}")
+        logger.error(f"Claude API Error: {e}")
         return None
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
-    logger.info(">>> Received image from ESP32-CAM")
+    logger.info(">>> Image received from ESP32-CAM")
     image_bytes = flask_request.data
     
     if not image_bytes:
         return "No data", 400
 
     try:
-        # 1. Send the visual to Telegram immediately
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing frame...")
+        # 1. Send to Telegram first
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing with Claude AI...")
 
-        # 2. Process with AI
-        detections = query_huggingface(image_bytes)
+        # 2. Get Claude's opinion
+        analysis = analyze_with_claude(image_bytes)
         
-        elephant_found = False
-        highest_score = 0
-        detected_label = ""
-
-        # 3. Parse classification results
-        if detections and isinstance(detections, list):
-            for obj in detections:
-                label = obj.get("label", "").lower()
-                score = obj.get("score", 0)
-                
-                # Model recognizes 'African elephant' and 'Indian elephant'
-                if "elephant" in label and score > 0.35:
-                    elephant_found = True
-                    if score > highest_score:
-                        highest_score = score
-                        detected_label = label
-        
-        # 4. Results logic
-        if elephant_found:
-            confidence = f"{int(highest_score * 100)}%"
-            msg = f"🐘 **ALERT: {detected_label.upper()} DETECTED!** 🐘\n📈 Confidence: {confidence}"
+        # 3. Process result
+        if analysis and "YES" in analysis:
+            msg = f"🐘 **ALERT: ELEPHANT DETECTED!** 🐘\n{analysis}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-            logger.info(f"MATCH: {detected_label} ({confidence})")
+        elif analysis and "NO" in analysis:
+            bot.send_message(CHAT_ID, "✅ **Result: Clear**")
         else:
-            if detections is not None:
-                bot.send_message(CHAT_ID, "✅ **Result: Clear**")
-                logger.info("MATCH: None")
-            else:
-                bot.send_message(CHAT_ID, "⚠️ AI Service Error. Check Token.")
+            bot.send_message(CHAT_ID, "⚠️ Claude could not process the image.")
 
         return "OK", 200
 
     except Exception as e:
-        logger.error(f"Route Error: {e}")
+        logger.error(f"System Error: {e}")
         return "Error", 500
 
 @app.route("/")
 def index():
-    return "Elephant Monitoring System v2026.STABLE is Live."
+    return "Elephant Detection (Claude Edition) is Online."
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
