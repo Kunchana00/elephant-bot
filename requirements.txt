@@ -1,0 +1,6 @@
+flask
+pyTelegramBotAPI
+requests
+ultralytics
+Pillow
+gunicorn
