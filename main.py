@@ -2,83 +2,50 @@ import os
 import telebot
 import logging
 import time
-import io
-import sys
 import requests
-from google import genai
+import sys
 from flask import Flask, request as flask_request
-from PIL import Image
 
-# --- 1. INITIALIZE FLASK FIRST ---
+# --- INITIALIZE FLASK ---
 app = Flask(__name__)
 
-# --- 2. LOGGING SETUP ---
+# --- LOGGING ---
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger('ElephantBot')
 
-# --- 3. CREDENTIALS ---
+# --- CREDENTIALS ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
-# --- 4. INITIALIZE CLIENTS ---
-client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options={'api_version': 'v1'}
-)
+# Initialize Telegram
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Hugging Face Configuration
+# Hugging Face Model (Facebook's DETR is perfect for animal detection)
 HF_MODEL = "facebook/detr-resnet-50"
+API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
 
-# --- 5. DETECTION FUNCTIONS ---
-
-def check_elephant_gemini(image_bytes):
-    """Primary Detection: Gemini Pro"""
-    try:
-        img = Image.open(io.BytesIO(image_bytes))
-        prompt = "Is there an elephant in this image? Respond exactly: ANSWER, CONFIDENCE. Example: YES, 98%."
-        
-        response = client.models.generate_content(
-            model='gemini-flash-lite-latest',
-            contents=[prompt, img]
-        )
-        
-        if response and response.text:
-            res = response.text.strip().upper()
-            if "," in res:
-                ans, conf = res.split(",", 1)
-                return ans.strip(), conf.strip()
-            return res, "N/A"
-        return None, None
-    except Exception as e:
-        logger.error(f"Gemini Error: {e}")
-        return None, None
-
-def check_elephant_hf(image_bytes):
-    """Backup Detection: Hugging Face"""
-    API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+def query_huggingface(image_bytes):
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    try:
-        response = requests.post(API_URL, headers=headers, data=image_bytes)
-        results = response.json()
-        
-        # If model is loading, it returns an 'estimated_time'
-        if isinstance(results, dict) and "estimated_time" in results:
-            logger.info("HF Model is waking up... waiting 5 seconds.")
-            time.sleep(5)
-            return check_elephant_hf(image_bytes)
+    
+    # Try up to 3 times in case the model is waking up
+    for i in range(3):
+        try:
+            response = requests.post(API_URL, headers=headers, data=image_bytes, timeout=20)
+            result = response.json()
 
-        for item in results:
-            if item.get('label') == 'elephant' and item.get('score') > 0.5:
-                return "YES", f"{int(item['score']*100)}%"
-        return "NO", "0%"
-    except Exception as e:
-        logger.error(f"HF Error: {e}")
-        return None, None
-
-# --- 6. ROUTES ---
+            # If the model is still loading, wait and retry
+            if isinstance(result, dict) and "estimated_time" in result:
+                wait_time = result.get("estimated_time", 5)
+                logger.info(f"Model is loading... waiting {wait_time}s (Attempt {i+1}/3)")
+                time.sleep(wait_time)
+                continue
+            
+            return result
+        except Exception as e:
+            logger.error(f"HF Attempt {i+1} failed: {e}")
+            time.sleep(2)
+    return None
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
@@ -87,37 +54,43 @@ def receive_photo():
     if not image_bytes: return "No data", 400
 
     try:
-        # 1. Immediate Telegram Feed
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion! Analyzing...")
+        # 1. Send immediate capture to Telegram
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Analyzing...")
+
+        # 2. Analyze using Hugging Face
+        detections = query_huggingface(image_bytes)
         
-        # 2. Try Gemini
-        answer, confidence = check_elephant_gemini(image_bytes)
-        source = "Gemini"
+        elephant_found = False
+        max_score = 0
 
-        # 3. Failover to Hugging Face if Gemini fails
-        if answer is None:
-            logger.warning("Gemini failed. Switching to Hugging Face...")
-            answer, confidence = check_elephant_hf(image_bytes)
-            source = "Hugging Face"
+        if detections and isinstance(detections, list):
+            for obj in detections:
+                label = obj.get("label", "").lower()
+                score = obj.get("score", 0)
+                
+                if label == "elephant" and score > 0.4:  # 40% confidence threshold
+                    elephant_found = True
+                    if score > max_score: max_score = score
 
-        # 4. Final Alert
-        if answer == "YES":
-            msg = f"🐘 **ELEPHANT DETECTED!** 🐘\n📈 Confidence: {confidence}\nSource: {source}"
+        # 3. Respond based on findings
+        if elephant_found:
+            confidence = f"{int(max_score * 100)}%"
+            msg = f"🐘 **ALERT: ELEPHANT DETECTED!** 🐘\n📈 Confidence: {confidence}\nModel: {HF_MODEL}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-        elif answer == "NO":
-            msg = f"✅ **Clear**\n📈 Confidence: {confidence}\nSource: {source}"
-            bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
+            logger.info(f">>> RESULT: ELEPHANT ({confidence})")
         else:
-            bot.send_message(CHAT_ID, "⚠️ Both AI services failed.")
-            
+            bot.send_message(CHAT_ID, "✅ **Result: Clear**\n(No elephants detected)")
+            logger.info(">>> RESULT: CLEAR")
+
         return "OK", 200
+
     except Exception as e:
-        logger.error(f"System Error: {e}")
-        return "Error", 500
+        logger.error(f"Error: {e}")
+        return "Internal Error", 500
 
 @app.route("/")
 def index():
-    return "Elephant Failover System is Online."
+    return "Elephant Detection System (Hugging Face Edition) is Online."
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
