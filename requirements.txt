@@ -1,6 +1,6 @@
 flask
 pyTelegramBotAPI
 requests
-ultralytics
+google-generativeai
 Pillow
 gunicorn
