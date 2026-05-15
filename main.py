@@ -17,8 +17,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# --- INITIALIZE CLIENT ---
-# Using the stable 'v1' API and the Google GenAI SDK
+# --- INITIALIZE CLIENT (PAID TIER) ---
+# We force 'v1' API for higher stability and paid quota usage
 client = genai.Client(
     api_key=GEMINI_API_KEY,
     http_options={'api_version': 'v1'}
@@ -32,13 +32,13 @@ def check_elephant(image_bytes):
         prompt = (
             "Analyze this image for the presence of an elephant. "
             "Respond in exactly this format: ANSWER, CONFIDENCE. "
-            "Example: YES, 99% or NO, 98%."
+            "Example: YES, 98% or NO, 95%."
         )
 
-        # Using the 'gemini-pro-latest' alias. 
-        # In May 2026, this points to the Gemini 3.1 Pro stable/GA release.
+        # Updated model name with -preview suffix
+        # Gemini 3.1 Pro is the flagship reasoning model for 2026
         response = client.models.generate_content(
-            model='gemini-pro-latest', 
+            model='gemini-3.1-pro-preview',
             contents=[prompt, img]
         )
         
@@ -58,28 +58,28 @@ def check_elephant(image_bytes):
 
 @app.route("/photo", methods=["POST"])
 def receive_photo():
-    logger.info(">>> Request received from ESP32-CAM")
+    logger.info(">>> Incoming request from ESP32-CAM")
     image_bytes = flask_request.data
     
     if not image_bytes:
         return "No data", 400
 
     try:
-        # 1. Send the photo to your Telegram
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Analyzing with the latest Gemini Pro...")
+        # 1. Immediate Telegram Feed
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Analyzing with Gemini 3.1 Pro...")
         
-        # 2. Get AI results
+        # 2. AI Analysis
         answer, confidence = check_elephant(image_bytes)
         
-        # 3. Final Output
+        # 3. Final Alert
         if answer == "YES":
-            msg = f"🐘 **ELEPHANT DETECTED!** 🐘\n📈 **Confidence:** {confidence}"
+            msg = f"🐘 **ALERT: ELEPHANT DETECTED!** 🐘\n📈 **Confidence:** {confidence}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
         elif answer == "NO":
             msg = f"✅ **Analysis: Clear**\n📈 **Confidence:** {confidence}"
             bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
         else:
-            bot.send_message(CHAT_ID, "⚠️ AI Error. Check Railway Logs for 404/429.")
+            bot.send_message(CHAT_ID, "⚠️ AI Service Error. Model path or Quota issue.")
             
         return "OK", 200
     except Exception as e:
@@ -88,7 +88,7 @@ def receive_photo():
 
 @app.route("/")
 def index():
-    return "Elephant Bot (Pro-Latest) is Live."
+    return "Elephant Detection System (Pro Tier 2026) is Online."
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
