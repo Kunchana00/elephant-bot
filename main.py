@@ -39,7 +39,7 @@ def check_elephant(image_bytes):
         for attempt in range(2):
             try:
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash',
+                    model='gemini-3.1-pro',
                     contents=[prompt, img]
                 )
                 
