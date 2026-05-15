@@ -2,29 +2,24 @@ import os
 import telebot
 import logging
 from google import genai
-from flask import Flask, request as flask_request
+from flask import Flask
 from PIL import Image
 import io
 import sys
+import threading
 
-# --- FORCING LOGS TO SHOW IN RAILWAY ---
-# This part is critical to see your print statements
+# Setup Logging
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-logger = logging.getLogger('gunicorn.error')
+logger = logging.getLogger('bot')
 
 # Get Variables
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Initialize Clients
 client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
-
-# Wire Flask logs to Gunicorn
-app.logger.handlers = logger.handlers
-app.logger.setLevel(logger.level)
 
 def check_elephant(image_bytes):
     try:
@@ -34,47 +29,42 @@ def check_elephant(image_bytes):
             contents=["Is there an elephant in this image? Respond with only 'YES' or 'NO'.", img]
         )
         answer = response.text.strip().upper()
-        app.logger.info(f"GEMINI RESULT: {answer}")
         return "YES" in answer
     except Exception as e:
-        app.logger.error(f"GEMINI ERROR: {e}")
+        logger.error(f"GEMINI ERROR: {e}")
         return False
 
-@app.route("/photo", methods=["POST"])
-def receive_photo():
-    app.logger.info("RECEIVED REQUEST AT /PHOTO")
-    image_bytes = flask_request.data
+# --- THIS PART HANDLES YOUR MANUAL UPLOADS ---
+@bot.message_handler(content_types=['photo'])
+def handle_manual_photo(message):
+    logger.info("MANUAL PHOTO RECEIVED IN CHAT")
+    bot.reply_to(message, "🔍 Analyzing your photo...")
     
-    if not image_bytes:
-        app.logger.warning("NO DATA RECEIVED IN POST")
-        return "No data", 400
-
-    app.logger.info(f"IMAGE SIZE: {len(image_bytes)} bytes")
-
     try:
-        # 1. Send to Telegram
-        app.logger.info("SENDING TO TELEGRAM...")
-        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Analyzing...")
+        # Get the highest resolution version of the photo
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
         
-        # 2. Check for Elephant
-        is_elephant = check_elephant(image_bytes)
+        # Check for elephant
+        is_elephant = check_elephant(downloaded_file)
         
         if is_elephant:
-            bot.send_message(CHAT_ID, "🐘 ELEPHANT DETECTED! 🐘")
+            bot.reply_to(message, "🐘 ELEPHANT DETECTED! 🐘")
         else:
-            bot.send_message(CHAT_ID, "✅ No elephant detected.")
-            
-        return "OK", 200
+            bot.reply_to(message, "✅ No elephant detected.")
     except Exception as e:
-        app.logger.error(f"SYSTEM ERROR: {e}")
-        return "Internal Error", 500
+        logger.error(f"CHAT ERROR: {e}")
+        bot.reply_to(message, "⚠️ Error processing image.")
 
 @app.route("/")
 def index():
-    app.logger.info("HEALTH CHECK ACCESSED")
-    return "Elephant Bot is Active and Waiting for Photos!"
+    return "Elephant Bot is listening to the Telegram Chat!"
 
+# Run both Flask (for Railway health) and Bot (for Chat)
 if __name__ == "__main__":
-    # Ensure port 8080 is used
+    # Start the bot in a separate thread so it doesn't block Flask
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    
+    # Run Flask on the port Railway expects
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
