@@ -1,69 +1,66 @@
-import requests
+import os
 import telebot
+import google.generativeai as genai
 from flask import Flask, request as flask_request
-from ultralytics import YOLO
 from PIL import Image
 import io
 
-BOT_TOKEN = "8732051636:AAFzBWYlE6id1sfyidCseuIzmRR1Nmg_nHI"
-CHAT_ID = "8241256348"
+# Credentials from Railway Environment Variables
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# Setup Gemini AI
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
-print("Loading YOLOv8 model...")
-model = YOLO("yolov8n.pt")
-print("Model loaded!")
+def check_elephant_with_gemini(image_bytes):
+    try:
+        # Load image from bytes
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Ask Gemini to analyze
+        prompt = "Is there an elephant in this image? Respond with only 'YES' or 'NO'."
+        response = model.generate_content([prompt, img])
+        
+        answer = response.text.strip().upper()
+        print(f"Gemini Analysis: {answer}")
+        return "YES" in answer
+    except Exception as e:
+        print(f"Gemini Error: {e}")
+        return False
 
-def check_elephant(image_bytes):
-    image = Image.open(io.BytesIO(image_bytes))
-    results = model(image)
-    
-    detected_classes = []
-    for result in results:
-        for box in result.boxes:
-            class_id = int(box.cls[0])
-            class_name = model.names[class_id]
-            confidence = float(box.conf[0])
-            detected_classes.append((class_name, confidence))
-            print(f"Detected: {class_name} ({confidence:.2f})")
-    
-    for class_name, confidence in detected_classes:
-        if class_name == "elephant" and confidence > 0.5:
-            return True, confidence
-    
-    return False, 0.0
-
-# ESP32 sends photo directly to this endpoint
 @app.route("/photo", methods=["POST"])
 def receive_photo():
-    print("Photo received from ESP32!")
-    
     image_bytes = flask_request.data
-    print(f"Image size: {len(image_bytes)} bytes")
-    
-    if len(image_bytes) == 0:
-        return "Error: no image received", 400
-    
-    # Send photo to Telegram first
-    bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected!")
-    
-    # Run elephant detection
-    is_elephant, confidence = check_elephant(image_bytes)
-    
-    if is_elephant:
-        bot.send_message(CHAT_ID, f"🐘 ELEPHANT DETECTED! (confidence: {confidence:.0%})")
-        print(f"Elephant confirmed! Confidence: {confidence:.0%}")
-    else:
-        bot.send_message(CHAT_ID, "✅ No elephant in photo.")
-        print("No elephant detected.")
-    
-    return "OK", 200
+    if not image_bytes:
+        return "No data received", 400
+
+    try:
+        # 1. Send the photo to your Telegram immediately
+        bot.send_photo(CHAT_ID, image_bytes, caption="📷 Motion detected! Analyzing...")
+
+        # 2. Perform AI Detection (Lightweight)
+        is_elephant = check_elephant_with_gemini(image_bytes)
+
+        if is_elephant:
+            bot.send_message(CHAT_ID, "🐘 ELEPHANT DETECTED! 🐘")
+        else:
+            bot.send_message(CHAT_ID, "✅ No elephant detected.")
+
+        return "OK", 200
+    except Exception as e:
+        print(f"Error: {e}")
+        return f"Error: {e}", 500
 
 @app.route("/")
 def index():
-    return "Elephant Detection Bot is running!"
+    return "Elephant Bot (Gemini Mode) is Running Successfully!"
 
 if __name__ == "__main__":
-    print("Starting Elephant Detection Bot...")
-    app.run(host="0.0.0.0", port=5000)	
+    # Dynamic port for Railway
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
